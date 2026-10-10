@@ -98,7 +98,12 @@
       const approve = document.querySelector('#approve-selected');
       if (approve) approve.onclick = () => action('approve', [...document.querySelectorAll('[data-review-select]:checked')].map(el => el.dataset.reviewSelect));
       const add = document.querySelector('#add-term');
-      if (add) add.onclick = () => { editTerms(); termDraft.push({zh:'', en:'', enabled:false}); host.render(); };
+      if (add) add.onclick = () => {
+        editTerms();
+        termDraft.push({zh:'', en:'', enabled:false});
+        host.render();
+        status('空白术语添加成功，尚未保存。');
+      };
       document.querySelectorAll('[data-term]').forEach(input => input.oninput = () => {
         editTerms();
         termDraft[Number(input.dataset.term)][input.dataset.key] = input.type === 'checkbox' ? input.checked : input.value;
