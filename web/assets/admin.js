@@ -7,6 +7,7 @@
   } = window.MCSA;
   let state, revision, csrf, currentUser, accounts = [], dirty = false;
   let section = 'posts';
+  let translationUI;
   const root = () => document.querySelector('#admin-root');
   const isSuper = () => currentUser?.role === 'super_admin';
   const can = permission => isSuper() || currentUser?.permissions?.includes(permission);
@@ -31,7 +32,9 @@
     settings: '网站设置',
     layout: '配色与布局',
     homeSections: '首页区块排序',
-    interfaceText: '按钮与界面文字'
+    interfaceText: '按钮与界面文字',
+    translations: '英文校对',
+    glossary: '名称术语表'
   };
   const fieldNames = {
     title: '标题',
@@ -185,6 +188,10 @@
     if (!response.ok) {
       const errors = {
         invalid_login: '账号或密码不正确。',
+        translation_conflict: '译文或中文已更新。请在英文校对页刷新状态，再核对后操作；本地英文编辑会保留。',
+        invalid_translation: '英文内容无效，请检查长度和必填项。',
+        invalid_placeholders: '请保留中文原文中的模板占位符，例如 {name}。',
+        invalid_glossary: '请填写唯一的中文名称和对应英文，每项不超过 200 字。',
         revision_conflict: '其他管理员已经更新内容。请先复制未保存文字，再刷新页面重新编辑。',
         login_required: '登录已过期，请刷新页面重新登录。',
         csrf_failed: '登录验证失效，请刷新页面。',
@@ -233,8 +240,7 @@
     const key = path.split('.').pop();
     label = label || fieldNames[key] || key;
     if (value && typeof value === 'object' && !Array.isArray(value) && 'zh' in value) {
-      const ready = value.en && value.hant;
-      return `<label class="cms-field">${esc(label)}<textarea data-path="${path}.zh">${esc(value.zh)}</textarea><small>${ready?'英文与繁体内容已就绪；修改后保存会同步更新。':'保存时自动翻译；繁体中文本地生成；英文未配置服务时标记待翻译。'}</small></label>`;
+      return `<div class="multilingual-field"><label class="cms-field">${esc(label)} · 简体中文<textarea data-path="${path}.zh">${esc(value.zh)}</textarea></label><details data-open-key="field-${esc(path)}"><summary>英文校对与繁体预览</summary><label class="cms-field">繁体中文（保存中文后自动生成）<textarea readonly>${esc(value.hant)}</textarea></label>${translationUI.panel(value._translationId)}</details></div>`;
     }
     if (['image', 'logo', 'heroLogo', 'opening'].includes(key)) {
       return `<div class="cms-field"><label>${esc(label)}<input data-path="${path}" value="${esc(value)}" placeholder="上传图片或填写图片网址"></label><div class="upload-row">${image(value,label,get(path.split('.').slice(0,-1).join('.'))?.crop)}${can('media.upload')?`<label class="button">上传图片<input class="upload-file" data-upload="${path}" type="file" accept="image/png,image/jpeg,image/gif,image/webp"></label>`:''}<button type="button" data-clear="${path}">清除图片</button></div></div>`;
@@ -272,10 +278,12 @@
 
   function editorCard(path, entry, index, kind) {
     const title = entry.name?.zh || entry.title?.zh || '未命名内容';
-    return `<details class="editor-card" ${index===0?'open':''}><summary>${index+1}. ${esc(title)}${kind==='posts'&&!entry.published?' · 草稿':''}</summary><div class="editor-body">${objectFields(path,entry)}${kind==='terms'?`<h3>本届成员</h3>${entry.members.map((member,i)=>editorCard(path+'.members.'+i,member,i,'member')).join('')}<button type="button" data-add-member="${path}.members">添加成员</button>`:''}<div class="editor-actions"><button type="button" data-move="${path}" data-direction="-1">上移</button><button type="button" data-move="${path}" data-direction="1">下移</button><button type="button" class="danger" data-delete="${path}">删除这条内容</button></div></div></details>`;
+    return `<details class="editor-card" data-open-key="entry-${esc(path)}" ${index===0?'open':''}><summary>${index+1}. ${esc(title)}${kind==='posts'&&!entry.published?' · 草稿':''}</summary><div class="editor-body">${objectFields(path,entry)}${kind==='terms'?`<h3>本届成员</h3>${entry.members.map((member,i)=>editorCard(path+'.members.'+i,member,i,'member')).join('')}<button type="button" data-add-member="${path}.members">添加成员</button>`:''}<div class="editor-actions"><button type="button" data-approve-entry="${path}">已检查本条英文，批准全部</button><button type="button" data-move="${path}" data-direction="-1">上移</button><button type="button" data-move="${path}" data-direction="1">下移</button><button type="button" class="danger" data-delete="${path}">删除这条内容</button></div></div></details>`;
   }
 
   function contentEditor() {
+    if (section === 'translations') return translationUI.review();
+    if (section === 'glossary') return translationUI.terms();
     if (section === 'homeSections') return `<p class="cms-hint">用上下按钮调整首页次序；关闭显示会隐藏该区块。导航保持原有内容。</p>${state.homeSections.map((item,index)=>`<div class="section-order-row"><strong>${esc(item.name.zh)}</strong><label><input type="checkbox" data-path="homeSections.${index}.visible" ${item.visible?'checked':''}>显示</label><button data-move="homeSections.${index}" data-direction="-1">上移</button><button data-move="homeSections.${index}" data-direction="1">下移</button></div>`).join('')}`;
 
     if (['settings', 'layout', 'interfaceText'].includes(section)) return `<div class="editor-body">${objectFields(section,state[section])}</div>`;
@@ -295,6 +303,7 @@
   }
 
   function render() {
+    const expanded = [...root().querySelectorAll('details[open][data-open-key]')].map(el => el.dataset.openKey);
     const sections = can('site.read') ? Object.entries(names) : [];
     if (isSuper()) sections.push(['accounts', '账号与权限']);
     if (!sections.length) section = '';
@@ -304,6 +313,7 @@
       : editing ? can('site.write') ? contentEditor() : `<p class="cms-hint">当前账号仅有查看权限。</p><fieldset disabled>${contentEditor()}</fieldset>`
       : '<p class="cms-hint">当前账号没有内容管理权限。</p>';
     root().innerHTML = `<section class="cms"><div class="cms-heading"><div><h1>网站管理后台</h1><p>${esc(currentUser?.username || '')} · ${isSuper()?'超级管理员':'普通管理员'}</p></div><a class="button" href="${esc(window.MCSA_CONFIG.frontendUrl)}" target="_blank" rel="noopener noreferrer">查看网站 ↗</a></div><div class="cms-toolbar">${editing&&can('site.write')?'<button class="button primary" id="save-site">保存并发布</button>':''}${editing?'<button class="button" id="preview-site">预览内容</button>':''}${can('backup.download')?'<a class="button" href="/api/backup">下载内容备份</a>':''}<button id="logout">退出登录</button></div><p id="cms-status" role="status">${dirty?'有未保存的修改。':'功能已载入。'}</p><div class="cms-layout"><nav class="cms-tabs">${sections.map(([key,name])=>`<button data-section="${key}" class="${section===key?'selected':''}">${name}</button>`).join('')}</nav><div class="cms-editor"><h2>${section==='accounts'?'账号与权限':names[section]||'可用功能'}</h2>${editor}</div></div></section>`;
+    root().querySelectorAll('details[data-open-key]').forEach(el => {if (expanded.includes(el.dataset.openKey)) el.open = true;});
     bind();
   }
 
@@ -334,16 +344,25 @@
       const dialog = document.createElement('dialog');
       dialog.className = 'cms-preview';
       const frontend = new URL(window.MCSA_CONFIG.frontendUrl);
-      const previewUrl = new URL('index.html?preview=1', frontend);
-      dialog.innerHTML = `<div><strong>首页预览 · 当前编辑内容</strong><button type="button">关闭预览</button></div><iframe title="首页预览" src="${esc(previewUrl.href)}"></iframe>`;
+      const previewUrl = new URL('index.html?preview=1&lang=zh', frontend);
+      dialog.innerHTML = `<div><strong>内容预览</strong><label>页面 <select id="preview-page">${Object.entries(state.pages).map(([id,p])=>`<option value="${esc(id==='home'?'index.html':id==='about'?'index.html#about':id+'.html')}" ${id==='home'?'selected':''}>${esc(p.title.zh)}</option>`).join('')}${state.posts.map(p=>`<option value="article.html?id=${encodeURIComponent(p.id)}">文章：${esc(p.title.zh)}</option>`).join('')}</select></label><label>语言 <select id="preview-language"><option value="zh">简体中文</option><option value="en">当前公开英文</option><option value="candidate">英文候选（未发布）</option></select></label><button type="button">关闭预览</button></div><iframe title="内容预览" src="${esc(previewUrl.href)}"></iframe>`;
       const frame = dialog.querySelector('iframe');
       function receive(event) {
         if (event.source !== frame.contentWindow || event.origin !== frontend.origin || event.data?.type !== 'mcsa-preview-ready') return;
-        frame.contentWindow.postMessage({type: 'mcsa-preview-content', content: window.MCSA.previewContent(state)}, frontend.origin);
+        const mode = dialog.querySelector('#preview-language').value;
+        const content = translationUI.preview(state, mode);
+        content.posts.forEach(post => { post.published = true; });
+        frame.contentWindow.postMessage({type: 'mcsa-preview-content', content: window.MCSA.previewContent(content)}, frontend.origin);
       }
       window.addEventListener('message', receive);
       document.body.append(dialog);
       dialog.showModal();
+      dialog.querySelectorAll('select').forEach(select => select.onchange = () => {
+        const url = new URL(dialog.querySelector('#preview-page').value, frontend);
+        url.searchParams.set('preview', '1');
+        url.searchParams.set('lang', dialog.querySelector('#preview-language').value === 'zh' ? 'zh' : 'en');
+        frame.src = url.href;
+      });
       function close() {
         window.removeEventListener('message', receive);
         dialog.remove();
@@ -420,7 +439,7 @@
     if (saveButton) saveButton.onclick = async event => {
       const button = event.currentTarget;
       button.disabled = true;
-      status('正在保存、翻译并发布，请稍候…');
+      status('正在保存中文并安排翻译…');
       root().querySelector('.cms-layout').inert = true;
       try {
         const result = await api('/admin/site', {
@@ -432,9 +451,10 @@
         });
         revision = result.revision;
         state = result.data;
+        translationUI.receive(result.translations);
         dirty = false;
         render();
-        status(`已保存第 ${revision} 次更新。已勾选发布的文章和其他栏目将在官网下次打开或刷新时显示。` + (result.warnings.length ? ' ' + result.warnings.join(' ') : ''), result.warnings.length > 0);
+        status(`中文已保存（第 ${revision} 次更新），繁体已同步。新增或修改内容的英文在后台翻译，请到“英文校对”查看进度；已有人工译文保持展示。`);
       } catch (error) {
         status(error.message, true);
       } finally {
@@ -443,13 +463,14 @@
       }
     };
     document.querySelector('#logout').onclick = async () => {
-      if (dirty && !confirm('有未保存修改，仍然退出吗？')) return;
+      if ((dirty || translationUI.dirty()) && !confirm('有未保存修改，仍然退出吗？')) return;
       await api('/logout', {
         method: 'POST'
       });
       dirty = false;
       location.reload();
     };
+    translationUI.bind();
     root().querySelectorAll('.account-form').forEach(form => form.onsubmit = async event => {
       event.preventDefault();
       const button = form.querySelector('[type="submit"]');
@@ -505,6 +526,7 @@
       const result = await api('/admin/site');
       state = result.data;
       revision = result.revision;
+      translationUI.receive(result.translations);
     }
     if (isSuper()) accounts = (await api('/admin/accounts')).accounts;
     render();
@@ -514,11 +536,13 @@
     }
   }
   window.addEventListener('beforeunload', event => {
-    if (dirty) {
+    if (dirty || translationUI.dirty()) {
       event.preventDefault();
       event.returnValue = '';
     }
   });
+  translationUI = window.MCSATranslations({esc, api, status, can, isDirty: () => dirty, render,
+    accept: result => {state = result.data; revision = result.revision; translationUI.receive(result.translations); render();}});
   api('/session').then(result => {
     csrf = result.csrf;
     currentUser = result.user;

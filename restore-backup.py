@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import sys, json, zipfile, sqlite3, os, re, shutil, datetime
-from server import validate, migrate
+from server import validate, migrate, create_app
 
 root = Path(__file__).resolve().parent
 inst = Path(os.environ.get("MCSA_INSTANCE", str(root / "instance")))
@@ -20,7 +20,10 @@ with zipfile.ZipFile(sys.argv[1]) as z:
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = inst.parent / ("instance-before-restore-" + stamp)
     shutil.copytree(inst, backup)
+    workflow = create_app(inst).extensions["translations"]
     with sqlite3.connect(inst / "site.sqlite3") as c:
+        c.execute("BEGIN IMMEDIATE")
+        workflow.restore(c, data, payload.get("translations"))
         c.execute(
             "UPDATE site SET data=?,revision=revision+1 WHERE id=1",
             (json.dumps(data, ensure_ascii=False),),

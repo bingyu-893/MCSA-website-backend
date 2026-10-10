@@ -1,6 +1,7 @@
 """Existing installations gain an account record without losing the admin login."""
 
 import json
+from contextlib import closing
 import os
 import sqlite3
 import subprocess
@@ -25,7 +26,7 @@ class AccountMigrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             # Model an installation created before the users table existed.
-            with sqlite3.connect(instance / "site.sqlite3") as connection:
+            with closing(sqlite3.connect(instance / "site.sqlite3")) as connection, connection:
                 connection.execute(
                     "CREATE TABLE site (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, data TEXT NOT NULL)"
                 )
@@ -35,7 +36,7 @@ class AccountMigrationTests(unittest.TestCase):
                 )
             with patch.dict("os.environ", {"MCSA_HTTPS": "0"}):
                 app = create_app(directory)
-                with sqlite3.connect(instance / "site.sqlite3") as connection:
+                with closing(sqlite3.connect(instance / "site.sqlite3")) as connection, connection:
                     rows = connection.execute(
                         "SELECT username, password_hash, role, permissions, active FROM users"
                     ).fetchall()
@@ -55,7 +56,7 @@ class AccountMigrationTests(unittest.TestCase):
                 )
 
                 create_app(directory)
-                with sqlite3.connect(instance / "site.sqlite3") as connection:
+                with closing(sqlite3.connect(instance / "site.sqlite3")) as connection, connection:
                     self.assertEqual(
                         connection.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1
                     )
@@ -66,10 +67,10 @@ class AccountMigrationTests(unittest.TestCase):
                         old_hash,
                     )
 
-                with sqlite3.connect(instance / "site.sqlite3") as connection:
+                with closing(sqlite3.connect(instance / "site.sqlite3")) as connection, connection:
                     connection.execute("DELETE FROM users WHERE username='admin'")
                 create_app(directory)
-                with sqlite3.connect(instance / "site.sqlite3") as connection:
+                with closing(sqlite3.connect(instance / "site.sqlite3")) as connection, connection:
                     self.assertEqual(
                         connection.execute("SELECT COUNT(*) FROM users").fetchone()[0], 0
                     )
@@ -98,7 +99,7 @@ class AccountAuthTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json["user"]["role"], "super_admin")
         self.assertEqual(self.client.get("/api/admin/site").status_code, 200)
-        with sqlite3.connect(Path(self.directory.name) / "site.sqlite3") as connection:
+        with closing(sqlite3.connect(Path(self.directory.name) / "site.sqlite3")) as connection, connection:
             connection.execute("UPDATE users SET active=0 WHERE username='admin'")
         self.assertFalse(self.client.get("/api/session").json["authenticated"])
         self.assertEqual(self.client.get("/api/admin/site").status_code, 401)
@@ -119,17 +120,21 @@ class AccountAuthTests(unittest.TestCase):
         instance = Path(self.directory.name)
         old_secret = json.loads((instance / "credentials.json").read_text())["secret"]
         result = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve().parents[1] / "start.py"), "--reset-password"],
+            [sys.executable, "-c",
+             "import getpass, runpy, sys; getpass.getpass=lambda prompt: input(); "
+             "sys.argv=[sys.argv[1], '--reset-password']; runpy.run_path(sys.argv[0], run_name='__main__')",
+             str(Path(__file__).resolve().parents[1] / "start.py")],
             input="replacement-admin-password\nreplacement-admin-password\n",
             text=True,
             capture_output=True,
+            timeout=30,
             env={**os.environ, "MCSA_INSTANCE": self.directory.name},
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         credentials = json.loads((instance / "credentials.json").read_text())
         self.assertNotEqual(credentials["secret"], old_secret)
-        with sqlite3.connect(instance / "site.sqlite3") as connection:
+        with closing(sqlite3.connect(instance / "site.sqlite3")) as connection, connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT password_hash FROM users WHERE username='admin'"
@@ -151,7 +156,7 @@ class AccountAuthTests(unittest.TestCase):
         )
 
     def test_regular_admin_cannot_use_super_admin_routes(self):
-        with sqlite3.connect(Path(self.directory.name) / "site.sqlite3") as connection:
+        with closing(sqlite3.connect(Path(self.directory.name) / "site.sqlite3")) as connection, connection:
             connection.execute(
                 "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
                 ("editor", generate_password_hash("editor-password-123"), "admin"),

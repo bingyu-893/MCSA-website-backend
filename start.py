@@ -41,8 +41,10 @@ print(
     f"Backend: http://127.0.0.1:{port}/\nAdmin: http://127.0.0.1:{port}/admin.html\nKeep this window open. Press Ctrl+C to stop.",
     flush=True,
 )
+application = create_app(inst)
+application.extensions["translations"].start()
 serve(
-    create_app(inst),
+    application,
     host=host,
     port=port,
     threads=6,

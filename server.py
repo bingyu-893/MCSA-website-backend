@@ -29,6 +29,7 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 from PIL import Image, UnidentifiedImageError
 from content_delivery import deployment_settings, published_content
+from translation_workflow import Workflow
 
 # 项目目录和默认内容模板；首次建库以及旧数据迁移都会用到 SEED。
 ROOT = Path(__file__).resolve().parent
@@ -138,8 +139,10 @@ def validate(content):
         # 递归检查嵌套字段，包括多语言文字、图片裁剪参数和链接。
         if isinstance(value, dict):
             if "zh" in value:
-                if set(value) != {"zh", "en", "hant"}:
+                if set(value) not in ({"zh", "en", "hant"}, {"zh", "en", "hant", "_translationId"}):
                     raise ValueError("invalid_translation")
+                if "_translationId" in value and not re.fullmatch(r"[a-f0-9]{32}", str(value["_translationId"])):
+                    raise ValueError("invalid_translation_id")
                 if not all(
                     isinstance(text, str) and len(text) <= 12000
                     for text in value.values()
@@ -426,7 +429,7 @@ def create_app(instance_path=None):
         return c
 
     # 首次运行时建内容表和账号表；已有数据库则保留其中的数据。
-    with conn() as c:
+    with closing(conn()) as c, c:
         c.execute(
             "CREATE TABLE IF NOT EXISTS site (id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL,data TEXT NOT NULL)"
         )
@@ -456,7 +459,7 @@ def create_app(instance_path=None):
                 ("admin", cred["password_hash"], "super_admin"),
             )
     # 旧内容升级到 v4 前，留一份原始 JSON 供人工恢复。
-    with conn() as connection:
+    with closing(conn()) as connection, connection:
         old_revision, old_json = connection.execute(
             "SELECT revision,data FROM site WHERE id=1"
         ).fetchone()
@@ -485,12 +488,15 @@ def create_app(instance_path=None):
     attempts = {}
     lock = threading.Lock()
 
-    # 从数据库读取网站内容
-    def load():
-        """读取当前内容和修订号；旧格式会在返回前迁移。"""
-        with conn() as c:
-            r, d = c.execute("SELECT revision,data FROM site WHERE id=1").fetchone()
-        return r, migrate(json.loads(d))
+    workflow = Workflow(conn)
+    with closing(conn()) as c:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name='translation_fields'").fetchone():
+            before = inst / "content-before-translations.json"
+            if not before.exists():
+                rev, raw = c.execute("SELECT revision,data FROM site WHERE id=1").fetchone()
+                before.write_text(json.dumps({"revision": rev, "data": json.loads(raw)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    workflow.initialize(migrate)
+    app.extensions["translations"] = workflow
 
     # 判断当前登录的是谁
     def current_user():
@@ -745,7 +751,10 @@ def create_app(instance_path=None):
     @app.get("/api/site")
     def public_site():
         """向官网返回可公开展示的内容，过滤未发布的信息。"""
-        rev, d = load()
+        with closing(conn()) as c, c:
+            c.execute("BEGIN")
+            rev, raw = c.execute("SELECT revision,data FROM site WHERE id=1").fetchone()
+            d = workflow.project(c, migrate(json.loads(raw)), public=True)
         return jsonify(revision=rev, data=published_content(d, backend_url))
 
     # 后台网站数据
@@ -753,13 +762,15 @@ def create_app(instance_path=None):
     @guard(permission="site.read")
     def admin_site():
         """向有查看权限的后台账号返回完整可编辑内容。"""
-        rev, d = load()
-        return jsonify(revision=rev, data=d)
+        with closing(conn()) as c, c:
+            c.execute("BEGIN")
+            rev, raw = c.execute("SELECT revision,data FROM site WHERE id=1").fetchone()
+            return jsonify(revision=rev, data=workflow.project(c, migrate(json.loads(raw))), translations=workflow.snapshot(c))
 
     @app.put("/api/admin/site")
     @guard(permission="site.write")
     def save_site():
-        """校验、翻译并保存整份内容；修订号不一致时拒绝覆盖。"""
+        """校验并保存内容及翻译任务；修订号不一致时拒绝覆盖。"""
         body = request.get_json(silent=True)
         try:
             if not isinstance(body, dict) or type(body.get("revision")) != int:
@@ -767,24 +778,53 @@ def create_app(instance_path=None):
             d = validate(body["data"])
         except (ValueError, KeyError, TypeError, AttributeError):
             return jsonify(error="invalid_content"), 400
-        from translations import translate_changes
+        # 内容和翻译任务一起提交；网络翻译在独立 worker 中执行。
+        try:
+            with closing(conn()) as c, c:
+                c.execute("BEGIN IMMEDIATE")
+                rev = c.execute("SELECT revision FROM site WHERE id=1").fetchone()[0]
+                if rev != body["revision"]:
+                    return jsonify(error="revision_conflict"), 409
+                workflow.sync(c, d)
+                c.execute("UPDATE site SET data=?,revision=revision+1 WHERE id=1", (json.dumps(d, ensure_ascii=False),))
+                result = dict(saved=True, revision=rev + 1, data=d, warnings=[], translations=workflow.snapshot(c))
+        except ValueError:
+            return jsonify(error="invalid_content"), 400
+        return jsonify(result)
 
-        # 先检查客户端基于哪个版本编辑，再翻译改动。
-        current_revision, previous = load()
-        if current_revision != body["revision"]:
-            return jsonify(error="revision_conflict"), 409
-        warnings = translate_changes(d, previous)
-        # 写入前在事务中复查版本，防止两位管理员同时保存互相覆盖。
-        with conn() as c:
-            c.execute("BEGIN IMMEDIATE")
-            rev = c.execute("SELECT revision FROM site WHERE id=1").fetchone()[0]
-            if rev != body["revision"]:
-                return jsonify(error="revision_conflict"), 409
-            c.execute(
-                "UPDATE site SET data=?,revision=revision+1 WHERE id=1",
-                (json.dumps(d, ensure_ascii=False),),
-            )
-        return jsonify(saved=True, revision=rev + 1, data=d, warnings=warnings)
+    @app.get("/api/admin/translations")
+    @guard(permission="site.read")
+    def translation_list():
+        with closing(conn()) as c:
+            return jsonify(workflow.snapshot(c))
+
+    @app.post("/api/admin/translations")
+    @guard(permission="site.write")
+    def translation_action():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify(error="invalid_translation"), 400
+        try:
+            with closing(conn()) as c, c:
+                c.execute("BEGIN IMMEDIATE")
+                workflow.mutate(c, body, g.current_user)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 409 if str(exc) == "translation_conflict" else 400
+        return admin_site()
+
+    @app.put("/api/admin/translation-glossary")
+    @guard(permission="site.write")
+    def translation_glossary():
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify(error="invalid_glossary"), 400
+        try:
+            with closing(conn()) as c, c:
+                c.execute("BEGIN IMMEDIATE")
+                workflow.save_glossary(c, body)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 409 if str(exc) == "translation_conflict" else 400
+        return admin_site()
 
     # 上传图片
     @app.post("/api/upload")
@@ -848,11 +888,15 @@ def create_app(instance_path=None):
     def backup():
         """下载内容 JSON 和上传图片组成的 ZIP 备份。"""
         out = io.BytesIO()
-        rev, d = load()
+        with closing(conn()) as c, c:
+            c.execute("BEGIN")
+            rev, raw = c.execute("SELECT revision,data FROM site WHERE id=1").fetchone()
+            d = workflow.project(c, migrate(json.loads(raw)))
+            translation_backup = workflow.export(c)
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr(
                 "content.json",
-                json.dumps({"revision": rev, "data": d}, ensure_ascii=False, indent=2),
+                json.dumps({"revision": rev, "data": d, "translations": translation_backup}, ensure_ascii=False, indent=2),
             )
             for p in media.glob("*"):
                 if p.is_file():

@@ -346,3 +346,19 @@
 .cms-brand { display:flex; align-items:center; gap:14px; padding:18px max(20px, calc((100vw - 1240px)/2)); background:white; border-bottom:1px solid var(--line); }
 .cms-brand img { width:42px; height:42px; object-fit:contain; }
 .cms-toolbar { top:0; }
+
+.multilingual-field { padding:16px 0; border-bottom:1px solid var(--line); }
+.multilingual-field details { margin-top:8px; }
+.translation-editor { padding:12px; background:#f7f5f4; border-radius:12px; }
+.translation-actions { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+.translation-state { font-weight:700; }
+.translation-copy { white-space:pre-wrap; overflow-wrap:anywhere; }
+.translation-editor textarea[readonly] { background:#eee; }
+.glossary-row { display:flex; flex-wrap:wrap; gap:12px; padding:16px 0; border-bottom:1px solid var(--line); align-items:end; }
+.glossary-row label { display:grid; gap:6px; }
+.glossary-row label:has(input[type=checkbox]) { display:flex; align-items:center; }
+.cms-preview>div { height:auto; min-height:60px; flex-wrap:wrap; gap:8px; }
+.cms-preview select { max-width:240px; }
+.cms-preview { display:none; }
+.cms-preview[open] { display:flex; flex-direction:column; }
+.cms-preview iframe { flex:1; min-height:0; }
