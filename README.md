@@ -17,7 +17,7 @@ Set `deployment.json`:
 - `frontendUrl`: complete website URL, including the GitHub Pages repository path.
 - `backendUrl`: this backend's HTTPS origin, without `/api` or `/admin.html`.
 
-The parent package's `connect.py` writes both this file and the frontend configuration.
+In the public website's `assets/config.js`, set `apiBase` to the `backendUrl` above followed by `/api`.
 
 Only the public `GET /api/site` endpoint supports cross-origin reads. It returns current published content and absolute CMS image URLs. Admin writes require login and CSRF. Upload URLs are publicly retrievable when known; do not upload confidential material.
 
