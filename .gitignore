@@ -12,3 +12,4 @@ credentials.json
 *.key
 *.log
 .DS_Store
+.test-tmp/

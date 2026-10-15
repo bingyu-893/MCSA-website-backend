@@ -312,7 +312,7 @@
     const editor = section === 'accounts' && isSuper() ? accountEditor()
       : editing ? can('site.write') ? contentEditor() : `<p class="cms-hint">当前账号仅有查看权限。</p><fieldset disabled>${contentEditor()}</fieldset>`
       : '<p class="cms-hint">当前账号没有内容管理权限。</p>';
-    root().innerHTML = `<section class="cms"><div class="cms-heading"><div><h1>网站管理后台</h1><p>${esc(currentUser?.username || '')} · ${isSuper()?'超级管理员':'普通管理员'}</p></div><a class="button" href="${esc(window.MCSA_CONFIG.frontendUrl)}" target="_blank" rel="noopener noreferrer">查看网站 ↗</a></div><div class="cms-toolbar">${editing&&can('site.write')?'<button class="button primary" id="save-site">保存并发布</button>':''}${editing?'<button class="button" id="preview-site">预览内容</button>':''}${can('backup.download')?'<a class="button" href="/api/backup">下载内容备份</a>':''}<button id="logout">退出登录</button></div><p id="cms-status" role="status">${dirty?'有未保存的修改。':'功能已载入。'}</p><div class="cms-layout"><nav class="cms-tabs">${sections.map(([key,name])=>`<button data-section="${key}" class="${section===key?'selected':''}">${name}</button>`).join('')}</nav><div class="cms-editor"><h2>${section==='accounts'?'账号与权限':names[section]||'可用功能'}</h2>${editor}</div></div></section>`;
+    root().innerHTML = `<section class="cms"><div class="cms-heading"><div><h1>网站管理后台</h1><p>${esc(currentUser?.username || '')} · ${isSuper()?'超级管理员':'普通管理员'}</p></div><a class="button" href="${esc(window.MCSA_CONFIG.frontendUrl)}" target="_blank" rel="noopener noreferrer">查看网站 ↗</a></div><div class="cms-toolbar">${editing&&can('site.write')?'<button class="button primary" id="save-site">保存并发布</button>':''}${editing?'<button class="button" id="preview-site">预览内容</button>':''}${can('backup.download')?'<a class="button" href="/api/backup">下载内容备份</a>':''}${can('site.read')?'<button class="button" id="export-public" title="导出当前已发布内容和公开英文，供临时网站生成静态页面">导出临时站公开内容</button>':''}<button id="logout">退出登录</button></div><p id="cms-status" role="status">${dirty?'有未保存的修改。':'功能已载入。'}</p><div class="cms-layout"><nav class="cms-tabs">${sections.map(([key,name])=>`<button data-section="${key}" class="${section===key?'selected':''}">${name}</button>`).join('')}</nav><div class="cms-editor"><h2>${section==='accounts'?'账号与权限':names[section]||'可用功能'}</h2>${editor}</div></div></section>`;
     root().querySelectorAll('details[data-open-key]').forEach(el => {if (expanded.includes(el.dataset.openKey)) el.open = true;});
     bind();
   }
@@ -339,6 +339,29 @@
   }
 
   function bind() {
+    const exportButton = document.querySelector('#export-public');
+    if (exportButton) exportButton.onclick = async () => {
+      if (dirty) return status('请先保存中文修改，再导出已发布内容。', true);
+      exportButton.disabled = true;
+      status('正在生成临时站公开内容包…');
+      try {
+        const response = await fetch('/api/admin/static-export', {credentials:'same-origin', signal:AbortSignal.timeout(60000)});
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          throw Error(error.error === 'export_missing_media'
+            ? `导出失败：以下图片缺失，请补充后重试：${(error.files || []).join('、')}`
+            : response.status === 401 ? '登录已过期，请重新登录后导出。' : '导出失败，请检查权限或稍后重试。');
+        }
+        const url = URL.createObjectURL(await response.blob());
+        const link = document.createElement('a');
+        link.href = url; link.download = 'MCSA-public-static-source.zip';
+        document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        status('公开内容包已下载。请使用临时站导出工具生成静态网页；未批准英文草稿不在此包内。');
+      } catch (error) {
+        status(error.name === 'TimeoutError' ? '导出超时，请稍后重试。' : error.message, true);
+      } finally { exportButton.disabled = false; }
+    };
     const previewButton = document.querySelector('#preview-site');
     if (previewButton) previewButton.onclick = () => {
       const dialog = document.createElement('dialog');

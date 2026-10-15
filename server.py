@@ -882,6 +882,42 @@ def create_app(instance_path=None):
             abort(404)
         return send_from_directory(media, name)
 
+    @app.get("/api/admin/static-export")
+    @guard(permission="site.read")
+    def static_export():
+        """Export only the public projection and the uploaded images it references."""
+        with closing(conn()) as c, c:
+            c.execute("BEGIN")
+            rev, raw = c.execute("SELECT revision,data FROM site WHERE id=1").fetchone()
+            public = published_content(workflow.project(c, migrate(json.loads(raw)), public=True), "")
+        # published_content prefixes local assets with '/'; bundles use relative paths.
+        referenced = set()
+
+        def relative(value):
+            if isinstance(value, dict):
+                return {key: relative(child) for key, child in value.items()}
+            if isinstance(value, list):
+                return [relative(child) for child in value]
+            if isinstance(value, str) and value.startswith(("/media/", "/images/")):
+                value = value[1:]
+            if isinstance(value, str) and re.fullmatch(r"media/[a-f0-9]{32}\.(png|jpg|gif|webp)", value):
+                referenced.add(value)
+            return value
+
+        public = relative(public)
+        missing = sorted(name for name in referenced if not (inst / name).is_file())
+        if missing:
+            return jsonify(error="export_missing_media", files=missing), 409
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("content.json", json.dumps({"format": "mcsa-public-v1", "revision": rev,
+                "data": public}, ensure_ascii=False, indent=2))
+            for name in sorted(referenced):
+                archive.write(inst / name, name)
+        out.seek(0)
+        return send_file(out, mimetype="application/zip", as_attachment=True,
+                         download_name="MCSA-public-static-source.zip")
+
     # 下载备份
     @app.get("/api/backup")
     @guard(permission="backup.download")
