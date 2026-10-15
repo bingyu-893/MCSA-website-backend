@@ -19,7 +19,9 @@
       return record.protected && record.protected_source !== record.source ? 'stale' : record.legacy ? 'legacy' : record.status;
     }
     function textFor(record) {
-      return edits.get(record.id) ?? record.draft ?? (record.candidate_source === record.source && record.candidate ? record.candidate : record.protected || '');
+      const currentProtected = record.protected_source === record.source && record.protected;
+      const currentCandidate = record.candidate_source === record.source && record.candidate;
+      return edits.get(record.id) ?? record.draft ?? (currentProtected || currentCandidate || record.protected || '');
     }
     function panel(id) {
       const record = snapshot.fields[id];
